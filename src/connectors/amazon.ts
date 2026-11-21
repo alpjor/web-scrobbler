@@ -27,7 +27,9 @@ function isNewPlayer() {
  * only exists once playback has started. The previous web-components markup
  * (`#transport music-horizontal-item`) is kept as a fallback for regions that
  * have not been migrated yet. Every getter decides at call time which markup is
- * present, because the MiniPlayer appears after this script has run.
+ * present, because the MiniPlayer appears after this script has run, and none
+ * of them depends on the progress slider exposing ARIA values (not every
+ * variant does).
  */
 const miniPlayerTitleSelector = '[data-testid="MiniPlayer_Title"]';
 const miniPlayerImageSelector =
@@ -70,7 +72,11 @@ function getMiniPlayerTrackInfo() {
 	const albumLink = box?.querySelector('a[href^="/albums/"]');
 	const album = albumLink ? albumLink.textContent : null;
 
-	const trackArt = Util.getAttrFromSelectors(miniPlayerImageSelector, 'src');
+	// The MiniPlayer shows a 128x128 thumbnail; ask for a 500x500 one.
+	const trackArt = Util.getAttrFromSelectors(
+		miniPlayerImageSelector,
+		'src',
+	)?.replace(/\._[^./]+_\.(\w+)$/, '._SX500_SY500_.$1');
 
 	return { artist, track: title.textContent, album, trackArt };
 }
@@ -79,10 +85,26 @@ function getMediaElement(): HTMLMediaElement | null {
 	return document.querySelector('audio, video');
 }
 
+/**
+ * Some MiniPlayer variants expose the position on an ARIA slider, others
+ * (e.g. music.amazon.com in Nov 2026) render a bare progress bar. The media
+ * element is read first; the slider is a fallback.
+ */
+function getSliderValue(attribute: string): number | null {
+	const value = Util.getAttrFromSelectors(
+		'[role="slider"][aria-valuemax]',
+		attribute,
+	);
+	const number = value === null ? NaN : Number.parseFloat(value);
+	return Number.isFinite(number) ? number : null;
+}
+
 function setupPropertiesForNewPlayer() {
-	// The MiniPlayer has no stable container; observe the app root (the core
-	// throttles state checks). `#transport` covers the previous markup.
-	Connector.playerSelector = [transportSelector, '#root'];
+	// The MiniPlayer has no stable container and animates its elements with
+	// JS, so observing a container fires dozens of times per second and slows
+	// the page down. Poll the player state instead.
+	Connector.playerSelector = null;
+	setInterval(() => Connector.onStateChanged(), 1000);
 
 	Connector.getTrackInfo = () => {
 		const miniPlayerInfo = getMiniPlayerTrackInfo();
@@ -111,7 +133,10 @@ function setupPropertiesForNewPlayer() {
 		if (document.querySelector(miniPlayerTitleSelector) === null) {
 			return null;
 		}
-		return getMediaElement()?.currentTime ?? null;
+		const currentTime = getMediaElement()?.currentTime;
+		return currentTime !== undefined && Number.isFinite(currentTime)
+			? currentTime
+			: getSliderValue('aria-valuenow');
 	};
 
 	Connector.getDuration = () => {
@@ -119,7 +144,9 @@ function setupPropertiesForNewPlayer() {
 			return null;
 		}
 		const duration = getMediaElement()?.duration;
-		return duration && Number.isFinite(duration) ? duration : null;
+		return duration && Number.isFinite(duration)
+			? duration
+			: getSliderValue('aria-valuemax');
 	};
 
 	Connector.scrobblingDisallowedReason = () => {
